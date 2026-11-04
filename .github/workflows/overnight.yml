@@ -1,0 +1,24 @@
+name: overnight
+"on":
+  schedule:
+    - cron: "4,16,28,40,52 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: adpost
+  cancel-in-progress: false
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post trade ad
+        run: python cloud_bot.py
+        env:
+          ROLI_TOKEN: ${{ secrets.ROLI_TOKEN }}
+          PLAYER_ID: ${{ secrets.PLAYER_ID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_REPO: CrimsonsGit/rolimons-overnight
