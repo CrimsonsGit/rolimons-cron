@@ -3,13 +3,18 @@ name: overnight
   schedule:
     - cron: "4,16,28,40,52 * * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "instant = app test run, no chain"
+        required: false
+        default: ""
 concurrency:
   group: adpost
   cancel-in-progress: false
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,3 +27,5 @@ jobs:
           PLAYER_ID: ${{ secrets.PLAYER_ID }}
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_REPO: CrimsonsGit/rolimons-overnight
+          CRON_REPO: ${{ github.repository }}
+          CHAIN: ${{ github.event.inputs.mode != 'instant' }}
