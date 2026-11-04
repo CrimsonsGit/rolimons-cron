@@ -1,9 +1,10 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 CREATEAD_URL = "https://api.rolimons.com/tradeads/v1/createad"
 GITHUB_API = "https://api.github.com"
@@ -11,6 +12,8 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 DAILY_CAP = 60
 MIN_INTERVAL_SECONDS = 23 * 60 + 30
+MARK_SECONDS = 24 * 60
+WORKER_SLEEP_LIMIT = 4 * 3600 + 50 * 60
 
 
 def log(msg):
@@ -98,15 +101,65 @@ def build_ids(items):
     return ids
 
 
-def main():
+def next_mark(now):
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    k = int((now - midnight).total_seconds() // MARK_SECONDS) + 1
+    return midnight + timedelta(seconds=MARK_SECONDS * k)
+
+
+def chain_enabled():
+    return (os.environ.get("CHAIN") == "true"
+            and bool(os.environ.get("CRON_REPO"))
+            and bool(os.environ.get("GH_PAT")))
+
+
+def self_dispatch(cron_full, pat):
+    branch = os.environ.get("CHAIN_REF", "main")
+    st, _ = gh_request("POST", f"/repos/{cron_full}/actions/workflows/overnight.yml/dispatches",
+                       {"ref": branch}, pat=pat)
+    if st == 204:
+        log("Chain: next slot dispatched")
+        return True
+    log(f"Chain dispatch failed (HTTP {st})")
+    return False
+
+
+def midnight_after(now):
+    nxt = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return nxt
+
+
+def park_until_midnight(chain):
+    if not chain:
+        return
+    remaining = (midnight_after(now_utc()) - now_utc()).total_seconds()
+    if remaining > WORKER_SLEEP_LIMIT:
+        remaining = WORKER_SLEEP_LIMIT
+    log(f"Cap parked: runner idles {(remaining/60):.1f} min, then chain continues")
+    time.sleep(max(remaining, 0) + 3)
+
+
+def run_sequence():
     token = os.environ.get("ROLI_TOKEN", "").strip()
     pat = os.environ.get("GH_PAT", "").strip()
+    cron_full = os.environ.get("CRON_REPO", "")
     try:
         player_id = int(os.environ.get("PLAYER_ID", "0"))
     except ValueError:
         player_id = 0
-
     full = os.environ.get("GH_REPO", "")
+    chain = chain_enabled()
+
+    if chain:
+        nxt = next_mark(now_utc())
+        wait = (nxt - now_utc()).total_seconds() + 5
+        if wait > 15:
+            log(f"Sleeping {wait/60:.1f} min until {nxt:%H:%M}z mark (exact 24-min cadence)")
+            time.sleep(wait)
+            log(f"Mark reached: posting at {now_utc():%H:%M:%S}z")
+        elif wait > 0:
+            time.sleep(wait)
+
     trade = None
     if pat and full:
         trade = fetch_trade(full, pat)
@@ -138,9 +191,6 @@ def main():
     if not (offer_ids or request_ids or tags):
         log("FATAL: nothing requested.")
         return 2
-    if len(offer_ids) + len(request_ids) + len(tags) == 0:
-        log("FATAL: empty trade.")
-        return 2
     if not token or not player_id:
         missing = [n for n, v in (("ROLI_TOKEN", token), ("PLAYER_ID", player_id)) if not v]
         log(f"FATAL: missing secret(s): {', '.join(missing)}.")
@@ -156,6 +206,7 @@ def main():
 
     if state["count"] >= DAILY_CAP:
         log(f"Daily cap of {DAILY_CAP} posts reached ({state['count']} today) - skipping, quota resets at UTC midnight.")
+        park_until_midnight(chain)
         return 0
 
     if state.get("last_post"):
@@ -220,9 +271,18 @@ def main():
         state["count"] = DAILY_CAP
         if pat and full:
             commit_state(full, state, pat)
+        park_until_midnight(chain)
         return 0
     log(f"Ad rejected (code {code}): {message}.")
     return 1
+
+
+def main():
+    try:
+        return run_sequence()
+    finally:
+        if chain_enabled():
+            self_dispatch(os.environ["CRON_REPO"], os.environ["GH_PAT"])
 
 
 if __name__ == "__main__":
