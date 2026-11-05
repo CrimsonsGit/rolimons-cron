@@ -80,6 +80,21 @@ def load_state(full, pat):
     return local or {}
 
 
+def fetch_entries(full, pat):
+    st, cur = gh_request("GET", f"/repos/{full}/contents/playlist.json", pat=pat)
+    if st == 200:
+        try:
+            import base64
+            data = json.loads(base64.b64decode(cur["content"]).decode("utf-8"))
+            keep = [e for e in data.get("entries", [])
+                    if e.get("offer") or e.get("request") or e.get("tags")]
+            if keep:
+                return keep
+        except Exception:
+            return None
+    return None
+
+
 def fetch_trade(full, pat):
     st, cur = gh_request("GET", f"/repos/{full}/contents/trade.json", pat=pat)
     if st == 200:
@@ -160,18 +175,40 @@ def run_sequence():
         elif wait > 0:
             time.sleep(wait)
 
-    trade = None
+    state = {"date": now_utc().strftime("%Y-%m-%d"), "count": 0, "last_post": ""}
     if pat and full:
-        trade = fetch_trade(full, pat)
+        state = load_state(full, pat) or {}
+
+    today = now_utc().strftime("%Y-%m-%d")
+    if state.get("date") != today or not isinstance(state.get("count"), int):
+        state = {"date": today, "count": 0, "last_post": state.get("last_post", "")}
+
+    entries = []
+    if pat and full:
+        entries = fetch_entries(full, pat) or []
+
+    trade = None
+    idx = 0
+    if entries:
+        raw_idx = state.get("index", 0)
+        idx = raw_idx if isinstance(raw_idx, int) and raw_idx >= 0 else 0
+        idx %= len(entries)
+        chosen = entries[idx]
+        log(f"Playlist set {idx + 1}/{len(entries)}")
+        trade = {"offer": chosen.get("offer", []), "request": chosen.get("request", []),
+                 "tags": chosen.get("tags", []), "offer_robux": chosen.get("offer_robux") or 0}
+    else:
+        if pat and full:
+            trade = fetch_trade(full, pat)
+            if trade is None:
+                log("WARNING: no trade.json in the private repo yet (sync it from the app).")
         if trade is None:
-            log("WARNING: no trade.json in the private repo yet (sync it from the app).")
-    if trade is None:
-        try:
-            with open("trade.json", encoding="utf-8") as f:
-                trade = json.load(f)
-        except FileNotFoundError:
-            log("FATAL: trade.json not found (private repo or local file).")
-            return 2
+            try:
+                with open("trade.json", encoding="utf-8") as f:
+                    trade = json.load(f)
+            except FileNotFoundError:
+                log("FATAL: trade.json not found (private repo or local file).")
+                return 2
 
     offer_ids = build_ids(trade.get("offer", []))
     request_ids = build_ids(trade.get("request", []))
@@ -195,14 +232,6 @@ def run_sequence():
         missing = [n for n, v in (("ROLI_TOKEN", token), ("PLAYER_ID", player_id)) if not v]
         log(f"FATAL: missing secret(s): {', '.join(missing)}.")
         return 2
-
-    state = {"date": now_utc().strftime("%Y-%m-%d"), "count": 0, "last_post": ""}
-    if pat and full:
-        state = load_state(full, pat) or {}
-
-    today = now_utc().strftime("%Y-%m-%d")
-    if state.get("date") != today or not isinstance(state.get("count"), int):
-        state = {"date": today, "count": 0, "last_post": state.get("last_post", "")}
 
     if state["count"] >= DAILY_CAP:
         log(f"Daily cap of {DAILY_CAP} posts reached ({state['count']} today) - skipping, quota resets at UTC midnight.")
@@ -255,6 +284,8 @@ def run_sequence():
     if data.get("success"):
         state["count"] += 1
         state["last_post"] = now_utc().isoformat()
+        if entries:
+            state["index"] = (idx + 1) % len(entries)
         log(f"AD POSTED TO ROLIMONS OK ({state['count']}/{DAILY_CAP} today)")
         if pat and full:
             commit_state(full, state, pat)
@@ -274,6 +305,11 @@ def run_sequence():
         park_until_midnight(chain)
         return 0
     log(f"Ad rejected (code {code}): {message}.")
+    if entries:
+        state["index"] = (idx + 1) % len(entries)
+        log("Playlist advanced to the next set for the next slot.")
+        if pat and full:
+            commit_state(full, state, pat)
     return 1
 
 
