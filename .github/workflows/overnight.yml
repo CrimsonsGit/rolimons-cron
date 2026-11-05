@@ -8,6 +8,8 @@ name: overnight
         description: "instant = app test run, no chain"
         required: false
         default: ""
+permissions:
+  contents: read
 concurrency:
   group: adpost
   cancel-in-progress: false
@@ -17,6 +19,8 @@ jobs:
     timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -26,6 +30,6 @@ jobs:
           ROLI_TOKEN: ${{ secrets.ROLI_TOKEN }}
           PLAYER_ID: ${{ secrets.PLAYER_ID }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          GH_REPO: CrimsonsGit/rolimons-overnight
+          GH_REPO: ${{ secrets.DATA_REPO }}
           CRON_REPO: ${{ github.repository }}
           CHAIN: ${{ github.event.inputs.mode != 'instant' }}
