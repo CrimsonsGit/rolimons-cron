@@ -298,12 +298,8 @@ def run_sequence():
         log("Cooldown active - nothing to do.")
         return 0
     if "daily" in low or "limit" in low or "too many" in low:
-        log(f"Rolimons daily limit reached: {message}. Pausing until UTC midnight.")
-        state["count"] = DAILY_CAP
-        if pat and full:
-            commit_state(full, state, pat)
-        park_until_midnight(chain)
-        return 0
+        log(f"Rolimons limit reply: {message}. Not parking - retrying next slot.")
+        return 1
     log(f"Ad rejected (code {code}): {message}.")
     if entries:
         state["index"] = (idx + 1) % len(entries)
